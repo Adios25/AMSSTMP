@@ -1,9 +1,14 @@
 import json
 import logging
 from typing import List, Dict, Any
-from src.cloud.sentiment_engine import DualSentimentEngine
-from src.cloud.db_manager import DatabaseManager
-from src.cloud.alert_manager import AlertManager
+try:
+    from src.cloud.sentiment_engine import DualSentimentEngine
+    from src.cloud.db_manager import DatabaseManager
+    from src.cloud.alert_manager import AlertManager
+except ImportError:
+    from sentiment_engine import DualSentimentEngine
+    from db_manager import DatabaseManager
+    from alert_manager import AlertManager
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(message)s")
 logger = logging.getLogger(__name__)

@@ -8,7 +8,8 @@ from dotenv import load_dotenv
 load_dotenv()
 logger = logging.getLogger(__name__)
 
-HF_API_URL = "https://api-inference.huggingface.co/models/ProsusAI/finbert"
+HF_ROUTER_URL = "https://router.huggingface.co/hf-inference/models/ProsusAI/finbert"
+HF_LEGACY_URL = "https://api-inference.huggingface.co/models/ProsusAI/finbert"
 
 # Domain-specific financial sentiment lexicon
 FINANCIAL_LEXICON = {
@@ -72,30 +73,40 @@ class DualSentimentEngine:
         }
 
     def analyze_finbert(self, text: str) -> Optional[Dict[str, float]]:
-        """Queries Hugging Face Inference API for FinBERT."""
+        """Queries Hugging Face Inference API for FinBERT with fallback to router."""
         if not self.hf_token or self.hf_token.startswith("hf_your_actual"):
             return None
 
-        try:
-            response = requests.post(
-                HF_API_URL,
-                headers=self.headers,
-                json={"inputs": text[:512]},
-                timeout=5
-            )
-            if response.status_code == 200:
-                raw_scores = response.json()[0]
-                score_map = {item["label"].lower(): float(item["score"]) for item in raw_scores}
-                return {
-                    "positive": score_map.get("positive", 0.0),
-                    "negative": score_map.get("negative", 0.0),
-                    "neutral": score_map.get("neutral", 0.0)
-                }
-            else:
-                return None
-        except Exception as e:
-            logger.debug(f"FinBERT API call skipped/failed ({e}). Using VADER fallback.")
-            return None
+        for endpoint in [HF_ROUTER_URL, HF_LEGACY_URL]:
+            try:
+                response = requests.post(
+                    endpoint,
+                    headers=self.headers,
+                    json={"inputs": text[:512]},
+                    timeout=5
+                )
+                if response.status_code == 200:
+                    raw_scores = response.json()
+                    if isinstance(raw_scores, list) and len(raw_scores) > 0:
+                        inner = raw_scores[0]
+                        if isinstance(inner, list):
+                            score_list = inner
+                        elif isinstance(inner, dict):
+                            score_list = raw_scores
+                        else:
+                            continue
+                        score_map = {item["label"].lower(): float(item["score"]) for item in score_list if "label" in item and "score" in item}
+                        if score_map:
+                            return {
+                                "positive": score_map.get("positive", 0.0),
+                                "negative": score_map.get("negative", 0.0),
+                                "neutral": score_map.get("neutral", 0.0)
+                            }
+            except Exception as e:
+                logger.debug(f"FinBERT endpoint {endpoint} failed ({e}).")
+                continue
+
+        return None
 
     def process_item(self, content_type: str, text: str) -> Dict[str, Any]:
         """Routes text to appropriate model and computes composite score."""

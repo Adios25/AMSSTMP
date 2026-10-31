@@ -54,8 +54,12 @@ class DatabaseManager:
         Idempotently inserts a batch of processed sentiment metrics.
         Returns the count of rows successfully persisted.
         """
+        return len(self.save_sentiment_batch_ids(records))
+
+    def save_sentiment_batch_ids(self, records: List[Dict[str, Any]]) -> set:
+        """Insert records and return the IDs that were newly inserted."""
         if not records:
-            return 0
+            return set()
 
         insert_query = """
             INSERT INTO fact_sentiment_metrics (
@@ -63,7 +67,7 @@ class DatabaseManager:
                 vader_compound, finbert_positive, finbert_negative, finbert_neutral,
                 composite_score, primary_sentiment, published_at
             ) VALUES %s
-            ON CONFLICT (id) DO NOTHING;
+            ON CONFLICT (id) DO NOTHING RETURNING id;
         """
 
         values = [
@@ -87,12 +91,11 @@ class DatabaseManager:
 
         with self.get_connection() as conn:
             with conn.cursor() as cur:
-                execute_values(cur, insert_query, values)
-                inserted_count = cur.rowcount
+                inserted_ids = {row[0] for row in execute_values(cur, insert_query, values, fetch=True)}
             conn.commit()
 
-        logger.info(f"Persisted {inserted_count} / {len(records)} records to fact_sentiment_metrics.")
-        return inserted_count
+        logger.info(f"Persisted {len(inserted_ids)} / {len(records)} records to fact_sentiment_metrics.")
+        return inserted_ids
 
     def log_alert(self, message_id: str, ticker: str, alert_type: str, score: float, target: str) -> None:
         """Logs an event-driven alert record into fact_sentiment_alerts."""

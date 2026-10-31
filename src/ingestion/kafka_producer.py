@@ -25,7 +25,7 @@ class MarketStreamProducer:
         )
         logger.info(f"Kafka Producer connected to {bootstrap_servers}, targeting topic '{topic}'.")
 
-    def publish_item(self, item: RawFeedItem) -> None:
+    def publish_item(self, item: RawFeedItem):
         """
         Publishes a single validated item using ticker as the partition key.
         """
@@ -40,6 +40,7 @@ class MarketStreamProducer:
             f"Published [{item.content_type}] for ${item.ticker} -> "
             f"Partition: {record_metadata.partition}, Offset: {record_metadata.offset}"
         )
+        return record_metadata
 
     def close(self):
         self.producer.flush()

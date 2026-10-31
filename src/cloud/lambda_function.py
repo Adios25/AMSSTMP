@@ -46,10 +46,14 @@ def lambda_handler(event: Dict[str, Any], context: Any = None) -> Dict[str, Any]
         processed_records.append(enriched_record)
 
     # 2. Bulk Persist to PostgreSQL Fact Table FIRST (so FK exists)
-    persisted_count = db_manager.save_sentiment_batch(processed_records)
+    inserted_ids = db_manager.save_sentiment_batch_ids(processed_records)
+    persisted_count = len(inserted_ids)
 
     # 3. Anomaly & Spike Evaluation AFTER persistence
     for enriched_record in processed_records:
+        if enriched_record["id"] not in inserted_ids:
+            continue
+        inserted_ids.remove(enriched_record["id"])
         alert_type = alert_manager.evaluate_and_notify(enriched_record)
         if alert_type:
             alerts_triggered += 1

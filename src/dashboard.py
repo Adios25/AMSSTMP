@@ -15,7 +15,7 @@ from dotenv import load_dotenv
 
 from src.ingestion.fetchers.mock_fetcher import MockFeedFetcher
 from src.ingestion.kafka_producer import MarketStreamProducer
-from src.streaming.cloud_bridge import CloudBridgeWorker
+from src.streaming.cloud_bridge import process_published_records
 from src.cloud.db_manager import DatabaseManager
 from src.cloud.sentiment_engine import DualSentimentEngine
 
@@ -102,11 +102,12 @@ def run_interactive_pipeline(tickers, num_cycles, interval):
         producer = MarketStreamProducer()
         
         total_items = []
+        published = []
         for c in range(num_cycles):
             for t in tickers:
                 items = fetcher.fetch(ticker=t, limit=2)
                 for item in items:
-                    producer.publish_item(item)
+                    published.append(producer.publish_item(item))
                     total_items.append(item.model_dump())
             time.sleep(interval)
             progress_bar.progress(int(((c + 1) / (num_cycles + 1)) * 50))
@@ -116,20 +117,22 @@ def run_interactive_pipeline(tickers, num_cycles, interval):
         
         # Step 2: Bridge & Serverless Execution
         flow_cols[2].markdown('<div class="flow-box">3. NLP Processing...</div>', unsafe_allow_html=True)
-        bridge = CloudBridgeWorker(batch_size=4)
-        bridge.start_bridge(max_batches=max(2, len(total_items) // 4))
+        processed = process_published_records(published)
         
         flow_cols[2].markdown('<div class="flow-box">3. Dual NLP Evaluated ✅</div>', unsafe_allow_html=True)
-        flow_cols[3].markdown('<div class="flow-box">4. Persisted to RDS & SNS ✅</div>', unsafe_allow_html=True)
+        flow_cols[3].markdown('<div class="flow-box">4. Database processing complete</div>', unsafe_allow_html=True)
         progress_bar.progress(100)
-        st.success(f"Successfully processed and stored {len(total_items)} streaming events!")
+        st.success(f"Processed {processed} Kafka events. Check the terminal for database and notification details.")
 
 # Trigger Button
 if st.sidebar.button("▶️ Run Streaming Ingestion & Analysis", type="primary"):
     if not selected_tickers:
         st.sidebar.error("Please select at least one ticker.")
     else:
-        run_interactive_pipeline(selected_tickers, cycles, interval_sec)
+        try:
+            run_interactive_pipeline(selected_tickers, cycles, interval_sec)
+        except Exception as exc:
+            st.error(f"Pipeline stopped: {exc}. Check the terminal running Streamlit for details.")
 
 # Real-time Metrics & DB Explorer
 db = DatabaseManager()

@@ -74,7 +74,7 @@ class DualSentimentEngine:
 
     def analyze_finbert(self, text: str) -> Optional[Dict[str, float]]:
         """Queries Hugging Face Inference API for FinBERT with fallback to router."""
-        if not self.hf_token or self.hf_token.startswith("hf_your_actual"):
+        if not self.hf_token or self.hf_token.startswith("hf_your_"):
             return None
 
         for endpoint in [HF_ROUTER_URL, HF_LEGACY_URL]:

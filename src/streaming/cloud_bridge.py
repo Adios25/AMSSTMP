@@ -2,11 +2,46 @@ import json
 import time
 import logging
 from typing import List, Dict, Any
-from kafka import KafkaConsumer
+from kafka import KafkaConsumer, TopicPartition
 from src.cloud.lambda_function import lambda_handler
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(message)s")
 logger = logging.getLogger(__name__)
+
+def process_published_records(metadata, bootstrap_servers="localhost:9092", timeout_seconds=30):
+    """Process only the Kafka offsets produced by one dashboard run."""
+    pending = {}
+    for record in metadata:
+        partition = TopicPartition(record.topic, record.partition)
+        pending.setdefault(partition, set()).add(record.offset)
+    consumer = KafkaConsumer(
+        bootstrap_servers=bootstrap_servers, group_id=None,
+        enable_auto_commit=False,
+        value_deserializer=lambda value: json.loads(value.decode("utf-8")),
+    )
+    processed = 0
+    try:
+        consumer.assign(list(pending))
+        for partition, offsets in pending.items():
+            consumer.seek(partition, min(offsets))
+        last_activity = time.monotonic()
+        while any(pending.values()):
+            messages = consumer.poll(timeout_ms=1000, max_records=4)
+            batch = [message for partition, records in messages.items()
+                     for message in records if message.offset in pending[partition]]
+            if batch:
+                response = lambda_handler({"records": [message.value for message in batch]})
+                if response.get("statusCode") != 200:
+                    raise RuntimeError(f"Processing returned status {response.get('statusCode')}")
+                for message in batch:
+                    pending[TopicPartition(message.topic, message.partition)].remove(message.offset)
+                processed += len(batch)
+                last_activity = time.monotonic()
+            elif time.monotonic() - last_activity >= timeout_seconds:
+                raise TimeoutError(f"Timed out waiting for this run's Kafka records; processed {processed}.")
+        return processed
+    finally:
+        consumer.close()
 
 class CloudBridgeWorker:
     """
@@ -48,13 +83,15 @@ class CloudBridgeWorker:
             logger.error(f"Error processing micro-batch in serverless handler: {e}")
             return False
 
-    def start_bridge(self, max_batches: int = 0):
+    def start_bridge(self, max_batches: int = 0, max_records: int = 0, max_idle_seconds: int = 0):
         """
         Main worker polling loop.
         max_batches=0 runs indefinitely until KeyboardInterrupt.
         """
         logger.info("Starting Bridge Consumer loop...")
         batch_count = 0
+        record_count = 0
+        last_activity = time.monotonic()
 
         try:
             while True:
@@ -67,6 +104,7 @@ class CloudBridgeWorker:
                         batch_records.append(message.value)
 
                 if batch_records:
+                    last_activity = time.monotonic()
                     logger.info(f"Collected micro-batch of {len(batch_records)} items. Dispatching...")
                     success = self.process_batch(batch_records)
 
@@ -74,14 +112,19 @@ class CloudBridgeWorker:
                         # Commit offsets only upon verified persistence
                         self.consumer.commit()
                         batch_count += 1
+                        record_count += len(batch_records)
                         logger.info(f"Batch {batch_count} processed & offsets committed successfully.")
                     else:
                         logger.warning("Batch processing failed. Offsets NOT committed; will retry on next poll.")
+                        if max_idle_seconds:
+                            raise RuntimeError("Batch processing failed; check the terminal logs for the underlying error.")
 
-                    if max_batches > 0 and batch_count >= max_batches:
+                    if (max_batches > 0 and batch_count >= max_batches) or (max_records > 0 and record_count >= max_records):
                         logger.info(f"Reached max requested batches ({max_batches}). Stopping bridge.")
                         break
                 else:
+                    if max_idle_seconds and time.monotonic() - last_activity >= max_idle_seconds:
+                        raise TimeoutError(f"No Kafka records received for {max_idle_seconds} seconds (processed {record_count} of {max_records} expected).")
                     time.sleep(0.5)
 
         except KeyboardInterrupt:
@@ -89,6 +132,7 @@ class CloudBridgeWorker:
         finally:
             self.consumer.close()
             logger.info("Kafka Consumer closed.")
+        return record_count
 
 if __name__ == "__main__":
     bridge = CloudBridgeWorker(batch_size=4)
